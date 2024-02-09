@@ -10,28 +10,89 @@
 #define PLUGIN_016_ID "Silvercrest"
 //#define PLUGIN_016_DEBUG
 
-const int SLVCR_BitCount = 24;
-const int8_t SLVCR_CodeCount = 8;
-//There are no buttons for which the first bit is high on these remotes, so just copy the first 4 values to the last 4 too...
-const uint16_t SLVCR_OnCodes_D[SLVCR_CodeCount] = {0xcd63, 0xf7b4, 0xb4f7, 0x4ceb, 0xcd63, 0xf7b4, 0xb4f7, 0x4ceb};
-const uint16_t SLVCR_OffCodes_D[SLVCR_CodeCount] = {0xae81, 0x8159, 0x782a, 0x9292, 0xae81, 0x8159, 0x782a, 0x9292};
-const uint16_t SLVCR_OnCodes_5[SLVCR_CodeCount] = {0xfa1b, 0x3da3, 0x0254, 0x8c27, 0xfa1b, 0x3da3, 0x0254, 0x8c27};
-const uint16_t SLVCR_OffCodes_5[SLVCR_CodeCount] = {0x6e41, 0x1bb9, 0xa3fa, 0xc002, 0x6e41, 0x1bb9, 0xa3fa, 0xc002};
-//These codes are known to work with remote 0xB, and are the default
-const uint16_t SLVCR_OnCodes_default[SLVCR_CodeCount] = {0xf756, 0x7441, 0xd9c5, 0xe3aa, 0x6af3, 0x453f, 0x0f6e, 0xc170};
-const uint16_t SLVCR_OffCodes_default[SLVCR_CodeCount] = {0x20e7, 0x5212, 0x9d88, 0x8c0b, 0x16bc, 0x3b99, 0xb8dd, 0xae24};
-
-static const uint16_t * SLVCR_Codes(int remoteId, boolean bOn)
+static const int SLVCR_BitCount = 24;
+static const int8_t SLVCR_CodeCount = 8;
+typedef struct
 {
-   switch(remoteId)
-   {
-      case 0xD:
-      return bOn? SLVCR_OnCodes_D: SLVCR_OffCodes_D;
-      case 0x5:
-      return bOn? SLVCR_OnCodes_5: SLVCR_OffCodes_5;
-      default:
-      return bOn? SLVCR_OnCodes_default: SLVCR_OffCodes_default;
-   }
+    uint16_t remoteId;//Least significant nibble must agree with remote nibble in packet
+    uint16_t OnCodes[SLVCR_CodeCount];
+    uint16_t OffCodes[SLVCR_CodeCount];
+} SLVCR_RemoteCodes_T;
+
+static const SLVCR_RemoteCodes_T SLVCR_RemoteCodes[] = {
+    { 0xE,
+        {0x97ae, 0x0585, 0x1cb1, 0x8606, 0x5863, 0x4fd0, 0xa4fe, 0xd31f},
+        {0x31c8, 0xfd32, 0xb2a7, 0x605b, 0x7e94, 0xe97d, 0xcb29, 0x2a4c} },
+//There are no buttons for which the first bit is high on these remotes, so just pad out and repeat the first 4 values to prevent array overflow
+    { 0xD,
+       {0xcd63, 0xf7b4, 0xb4f7, 0x4ceb, 0xcd63, 0xf7b4, 0xb4f7, 0x4ceb},
+       {0xae81, 0x8159, 0x782a, 0x9292, 0xae81, 0x8159, 0x782a, 0x9292} },
+    { 0x5,
+        {0xfa1b, 0x3da3, 0x0254, 0x8c27, 0xfa1b, 0x3da3, 0x0254, 0x8c27},
+        {0x6e41, 0x1bb9, 0xa3fa, 0xc002, 0x6e41, 0x1bb9, 0xa3fa, 0xc002} },
+    { 0x8,
+        {0x7307, 0x3b44, 0x8ae3, 0x216b, 0x7307, 0x3b44, 0x8ae3, 0x216b},
+        {0x1d51, 0x9922, 0xa59a, 0x4789, 0x1d51, 0x9922, 0xa59a, 0x4789} },
+//Second remote control seen with remote nibble of 8, but different message body, so assign a remote code of 0x18 to this one
+    { 0x18,
+        {0xd11b, 0x5d27, 0xc954, 0x7ca3, 0xd11b, 0x5d27, 0xc954, 0x7ca3},
+        {0xef02, 0x9641, 0x67fa, 0x34b9, 0xef02, 0x9641, 0x67fa, 0x34b9} },
+    { 0x1,
+        {0x6d03, 0x42fb, 0x3ee7, 0xf974, 0x6d03, 0x42fb, 0x3ee7, 0xf974},
+        {0xa0a2, 0xdb1a, 0x57d9, 0xe5c1, 0xa0a2, 0xdb1a, 0x57d9, 0xe5c1} },
+//These codes are known to work with remote 0xB, and used to be the default
+    { 0xB,
+        {0xf756, 0x7441, 0xd9c5, 0xe3aa, 0x6af3, 0x453f, 0x0f6e, 0xc170},
+        {0x20e7, 0x5212, 0x9d88, 0x8c0b, 0x16bc, 0x3b99, 0xb8dd, 0xae24} },
+//Terminating element to stop list
+    { 0xFFFF,
+        {0,0,0,0,0,0,0,0},
+        {0,0,0,0,0,0,0,0} }
+};
+
+const bool SLVCR_LookupCodes(uint8_t *packet, bool *pbOn, uint16_t *pRemoteId)
+{
+    uint8_t remote_nibble = packet[0] >> 4;
+
+    // Try to find in relevant truth tables...
+    uint16_t commandBits = ((uint16_t)(packet[0] & 0x0F) << 12)| ((uint16_t)packet[1]) << 4 | (packet[2] & 0xF0) >> 4; //(packet >> 4) & 0xFFFF;
+    for(int i = 0; SLVCR_RemoteCodes[i].remoteId != 0xFFFF; i++)
+    {
+        const SLVCR_RemoteCodes_T *this_remote = &SLVCR_RemoteCodes[i];
+        if((this_remote->remoteId & 0xF) == remote_nibble)
+        {
+            //This probably matches our remote, now we need to loop through and see if it matches any of the codes
+            for(int codeIndex = 0; codeIndex < SLVCR_CodeCount; codeIndex++)
+            {
+                if(this_remote->OnCodes[codeIndex] == commandBits)
+                    *pbOn = true;
+                else if(this_remote->OffCodes[codeIndex] == commandBits)
+                    *pbOn = false;
+                else
+                    //Didn't match so continue to next iteration
+                    continue;
+                //If we reach here we did match one of the 2 modes
+                *pRemoteId = this_remote->remoteId;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static const bool SLVCR_Codes(uint16_t remoteId, const uint16_t * OnCodes, const uint16_t * OffCodes)
+{
+    for(int i = 0; SLVCR_RemoteCodes[i].remoteId != 0xFFFF; i++)
+    {
+        const SLVCR_RemoteCodes_T *this_remote = &SLVCR_RemoteCodes[i];
+        if(this_remote->remoteId == remoteId)
+        {
+            OnCodes = this_remote->OnCodes;
+            OffCodes = this_remote->OffCodes;
+            return true;
+        }
+    }
+    return false;
 }
 
 boolean Plugin_016(byte function, const char *string)
@@ -96,39 +157,26 @@ boolean Plugin_016(byte function, const char *string)
             effectiveCommandOff = CMD_On;  
          }
 
-        uint8_t remoteId = packet[0] >> 4;
-
          // Try to find the command bits inside our truth table
-         uint16_t commandBits = ((uint16_t)(packet[0] & 0x0F) << 12)| ((uint16_t)packet[1]) << 4 | (packet[2] & 0xF0) >> 4; //(packet >> 4) & 0xFFFF;
-         enum CMD_OnOff command = CMD_Unknown;
-         byte commandCodeIndex = 0;
-         const uint16_t* OnCodes = SLVCR_Codes(remoteId, 1);
-         const uint16_t* OffCodes = SLVCR_Codes(remoteId, 0);
-         while (commandCodeIndex < SLVCR_CodeCount && command == CMD_Unknown)
-         {
-            if (commandBits == OnCodes[commandCodeIndex])
-               command = effectiveCommandOn;
-            else if (commandBits == OffCodes[commandCodeIndex])
-               command = effectiveCommandOff;
+         uint16_t remoteId = 0;
+         bool bPacketOn = false;
 
-            commandCodeIndex++;
-         }
-
-         if (command == CMD_Unknown)
+         if (!SLVCR_LookupCodes(packet, &bPacketOn, &remoteId))
          {
+
             #ifdef PLUGIN_016_DEBUG
-            Serial.print(F(PLUGIN_016_ID ": Unknown command bits: "));
-            Serial.println(commandBits, 16);
+            Serial.print(F(PLUGIN_016_ID ": Unknown remote: "));
+            int packetData = (packet[0] << 16) | (packet[1] << 8) | (packet[3]);
+            Serial.println(packetData, 16);
             #endif
             return false;
          }
+         enum CMD_OnOff command = bPacketOn? effectiveCommandOn : effectiveCommandOff;
 
          // all is good, output the received packet
          display_Header();
          display_Name(PLUGIN_016_ID);
-         //display_IDn(packet, 6); // global packet, to be removed later on
-         display_IDn(remoteId, 1);  // remote Id
-//         display_IDn(packet & 0x0F, 6);  // remote Id
+         display_IDn(remoteId, 8);  // remote Id
          display_SWITCH(buttonId); // button Id
          display_CMD(false, command);
          display_Footer();
@@ -194,8 +242,14 @@ boolean PluginTX_016(byte function, const char *string)
    uint16_t commandCode = 0;  
 
    byte codeIndex = 1 << ((buttonId & 0x1) << 1); // one of the first 4, or one of the last four, depending on the first bit of the buttonId
-   const uint16_t* OnCommandArray = SLVCR_Codes(remoteId, 1);
-   const uint16_t* OffCommandArray = SLVCR_Codes(remoteId, 0);
+   const uint16_t* OnCommandArray = NULL;
+   const uint16_t* OffCommandArray = NULL;
+
+   if(!SLVCR_Codes(remoteId, OnCommandArray, OffCommandArray))
+   {
+      return false;
+   }
+
    if (buttonId & 2)  // invert if second bit is set
    {
       const uint16_t* tmp = OnCommandArray;
